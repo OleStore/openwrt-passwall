@@ -1,7 +1,6 @@
-local d = require "luci.dispatcher"
 local uci = require"luci.model.uci".cursor()
 local api = require "luci.model.cbi.passwall.api.api"
-local appname = "passwall"
+local appname = api.appname
 local has_xray = api.is_finded("xray")
 
 m = Map(appname)
@@ -95,7 +94,7 @@ if current_node and current_node ~= "" and current_node ~= "nil" then
     if n then
         if tonumber(m:get("@auto_switch[0]", "enable") or 0) == 1 then
             local remarks = api.get_full_node_remarks(n)
-            local url = d.build_url("admin", "services", appname, "node_config", current_node)
+            local url = api.url("node_config", current_node)
             tcp_node.description = tcp_node.description .. translatef("Current node: %s", string.format('<a href="%s">%s</a>', url, remarks)) .. "<br />"
         end
         if n.protocol and n.protocol == "_shunt" then
@@ -103,7 +102,7 @@ if current_node and current_node ~= "" and current_node ~= "nil" then
                 local id = e[".name"]
                 local remarks = translate(e.remarks)
                 if n[id] and n[id] ~= "nil" then
-                    local url = d.build_url("admin", "services", appname, "node_config", n[id])
+                    local url = api.url("node_config", n[id])
                     local r = api.get_full_node_remarks(uci:get_all(appname, n[id]))
                     tcp_node.description = tcp_node.description .. remarks .. "：" .. string.format('<a href="%s">%s</a>', url, r) .. "<br />"
                 end
@@ -111,7 +110,14 @@ if current_node and current_node ~= "" and current_node ~= "nil" then
             local id = "default_node"
             local remarks = translate("Default")
             if n[id] and n[id] ~= "nil" then
-                local url = d.build_url("admin", "services", appname, "node_config", n[id])
+                local url = api.url("node_config", n[id])
+                local r = api.get_full_node_remarks(uci:get_all(appname, n[id]))
+                tcp_node.description = tcp_node.description .. remarks .. "：" .. string.format('<a href="%s">%s</a>', url, r) .. "<br />"
+            end
+            local id = "main_node"
+            local remarks = translate("Default") .. translate("Preproxy")
+            if n[id] and n[id] ~= "nil" then
+                local url = api.url("node_config", n[id])
                 local r = api.get_full_node_remarks(uci:get_all(appname, n[id]))
                 tcp_node.description = tcp_node.description .. remarks .. "：" .. string.format('<a href="%s">%s</a>', url, r) .. "<br />"
             end
@@ -151,6 +157,15 @@ if api.is_finded("chinadns-ng") then
     o:depends("chinadns_ng", "1")
 end
 
+if nixio.fs.access("/usr/share/" .. appname .. "/rules/chnlist") then
+    o = s:taboption("DNS", Flag, "use_chnlist", translate("Use ChinaList"), translate("Only useful in non-gfwlist mode.") .. "<br />" .. translate("When used, the domestic DNS will be used only when the chnlist rule is hit, and the domain name that misses the rule will be resolved by remote DNS."))
+    o.default = "0"
+    o:depends("tcp_proxy_mode", "chnroute")
+    o:depends("udp_proxy_mode", "chnroute")
+    o:depends("localhost_tcp_proxy_mode", "chnroute")
+    o:depends("localhost_udp_proxy_mode", "chnroute")
+end
+
 o = s:taboption("DNS", Value, "up_china_dns", translate("Local DNS") .. "(UDP)")
 o.description = translate("IP:Port mode acceptable, multi value split with english comma.") .. "<br />" .. translate("When the selection is not the default, this DNS is forced to be set to dnsmasq upstream DNS.")
 o.default = "default"
@@ -159,13 +174,8 @@ if has_xray then
     o:value("xray_doh", "Xray DNS(DoH)")
 end
 o:value("223.5.5.5", "223.5.5.5 (" .. translate("Ali") .. "DNS)")
-o:value("223.6.6.6", "223.6.6.6 (" .. translate("Ali") .. "DNS)")
 o:value("114.114.114.114", "114.114.114.114 (114DNS)")
-o:value("114.114.115.115", "114.114.115.115 (114DNS)")
 o:value("119.29.29.29", "119.29.29.29 (DNSPOD DNS)")
-o:value("182.254.116.116", "182.254.116.116 (DNSPOD DNS)")
-o:value("1.2.4.8", "1.2.4.8 (CNNIC DNS)")
-o:value("210.2.4.8", "210.2.4.8 (CNNIC DNS)")
 o:value("180.76.76.76", "180.76.76.76 (" .. translate("Baidu") .. "DNS)")
 
 ---- DoH
@@ -371,8 +381,12 @@ end
 for k, v in pairs(nodes_table) do
     tcp_node:value(v.id, v.remarks)
     tcp_node_socks:depends("tcp_node", v.id)
-    if has_xray then
-        tcp_node_http:depends("tcp_node", v.id)
+    if v.type == "Xray" then
+        if has_xray then
+            tcp_node_http:depends("tcp_node", v.id)
+        end
+    else
+        tcp_node_http:depends("tcp_node_socks", true)
     end
     udp_node:value(v.id, v.remarks)
     if v.type == "Socks" then
